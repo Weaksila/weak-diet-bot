@@ -478,7 +478,13 @@ async def handle_photo(message: Message):
 
 @dp.message(F.voice)
 async def handle_voice(message: Message):
-    await process_request(message, "voice")
+    lang_code = db.get_lang(message.from_user.id)
+    msg_text = {
+        "uz": "🎙 *Ovozli xabarlar xizmati vaqtincha faol emas!* Iltimos, savolingizni matn yoki rasm ko'rinishida yuboring.",
+        "ru": "🎙 *Голосовые сообщения временно отключены!* Пожалуйста, отправьте ваш вопрос текстом или картинкой.",
+        "en": "🎙 *Voice messages are temporarily disabled!* Please send your question as text or photo."
+    }
+    await message.answer(msg_text.get(lang_code, msg_text["uz"]))
 
 @dp.message()
 async def fallback(message: Message):
@@ -524,13 +530,23 @@ async def process_request(message: Message, input_type: str):
                        "Maslahatni aynan shunga moslang.")
 
         prompt = (
-            f"Siz WEAK — professional AI dietolog botisiz. Javob {target_lang} bo'lsin.\n"
-            "DIQQAT: Agar sizga OVOZLI XABAR kelgan bo'lsa, uni eshitib tushuning va javob bering!\n\n"
-            "Javobingiz QISQA, LONDА va chiroyli shaklda bo'lishi SHART. Ortiqcha gaplarsiz, faqat KERAKLI ma'lumotni bering.\n"
-            "1. Ovqat rasmida: kaloriya, oqsil/uglevod/yog'.\n"
-            "2. Xolodilnik rasmida: qisqa retsept va kaloriya.\n"
-            "3. Qadoq rasmida: foydali yoki zararli xulosasi.\n"
-            "4. Ovoz yoki matnda: savolga bevosita, qisqa va aniq javob." + personal
+            f"Siz WEAK — professional AI dietolog botisiz. Javobingiz {target_lang} bo'lsin.\n"
+            "Foydalanuvchi yuborgan rasm yoki matndagi taomni diqqat bilan tahlil qiling va AYNAN quyidagi shablon bo'yicha javob bering. Hech qanday salom-alik yoki ortiqcha gaplarsiz, faqat shablondagi ma'lumotlarni yozing:\n\n"
+            "---\n\n"
+            "### [Taom yoki mahsulot nomi] Ozuqaviy Tahlili (taxminan [vazni/porsiyasi] uchun)\n\n"
+            "1. 🔥 *Taxminiy kaloriya (kkal) miqdori:*\n"
+            "   [Kaloriya miqdori va u haqida qisqa izoh, masalan: Taxminan 1100 - 1300 kkal.]\n\n"
+            "2. *Oqsil (protein), uglevod va yog' miqdori (grammda):*\n"
+            "   💪 *Oqsil (Protein):* Taxminan [miqdor] gramm\n"
+            "   🍚 *Uglevod:* Taxminan [miqdor] gramm\n"
+            "   🧈 *Yog':* Taxminan [miqdor] gramm\n\n"
+            "3. ⚠️ *Ushbu taom dieta va ozish (kaloriya defitsiti) uchun mos keladimi yoki yo'qligini tushuntiring:*\n"
+            "   [Batafsil tushuntirish: mos keladimi, nima uchun mos kelmaydi yoki mos keladi, kunlik me'yorga ta'siri.]\n\n"
+            "4. ✅ *Atletlar va faqat mushak massasini oshirmoqchi bo'lganlar uchun ushbu taomning foydasi haqida xulosa bering:*\n"
+            "   ⚡ *Energiya manbai:* [izoh]\n"
+            "   📈 *Mushak massasini oshirish:* [izoh]\n"
+            "   ✅ *Xulosa:* [taomning mushak tiklanishi uchun yakuniy xulosasi]\n\n"
+            "---" + personal
         )
 
         contents = [prompt]
