@@ -9,6 +9,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 import google.generativeai as genai
 import database as db
+from aiohttp import web
 
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -569,7 +570,20 @@ async def process_request(message: Message, input_type: str):
             except:
                 await wait_msg.edit_text("⚙️ Javobni yuborishda xatolik. Qayta urinib ko'ring.")
 
+async def handle_web(request):
+    return web.Response(text="WEAK Dietolog Bot is running!")
+
 async def main():
+    app = web.Application()
+    app.router.add_get('/', handle_web)
+    
+    port = int(os.getenv("PORT", 8080))
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    
+    print(f"Web server started on port {port}")
     print("WEAK Bot ishga tushdi!")
     await dp.start_polling(bot)
 
