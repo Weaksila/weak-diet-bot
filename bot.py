@@ -495,10 +495,16 @@ async def process_request(message: Message, input_type: str):
     db.add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
     uid = message.from_user.id
 
+    is_vip = False
     if uid == ADMIN_ID:
         has_limit = True
+        is_vip = True
     else:
-        has_limit = db.check_and_update_limit(uid)
+        is_vip = db.is_premium(uid)
+        if is_vip:
+            has_limit = True
+        else:
+            has_limit = db.check_and_update_limit(uid)
 
     if not has_limit:
         await message.answer(
@@ -518,8 +524,12 @@ async def process_request(message: Message, input_type: str):
     lang_names = {"uz": "O'zbek tilida", "ru": "на русском языке", "en": "in English"}
     target_lang = lang_names.get(lang_code, "O'zbek tilida")
 
-    wait_text = {"uz": "⏳ Tahlil qilinmoqda...", "ru": "⏳ Анализируем...", "en": "⏳ Analyzing..."}
-    wait_msg = await message.answer(wait_text.get(lang_code, "⏳ Tahlil qilinmoqda..."))
+    if is_vip:
+        wait_text = {"uz": "⚡ *VIP* tezlikda tahlil qilinmoqda...", "ru": "⚡ *VIP* быстрый анализ...", "en": "⚡ *VIP* fast analyzing..."}
+    else:
+        wait_text = {"uz": "⏳ Tahlil qilinmoqda...", "ru": "⏳ Анализируем...", "en": "⏳ Analyzing..."}
+        
+    wait_msg = await message.answer(wait_text.get(lang_code, wait_text["uz"]), parse_mode=ParseMode.MARKDOWN)
 
     try:
         profile = db.get_profile(uid)
@@ -567,7 +577,7 @@ async def process_request(message: Message, input_type: str):
         elif input_type == "text":
             contents.append(message.text)
 
-        resp = model.generate_content(contents)
+        resp = await model.generate_content_async(contents)
         try:
             await wait_msg.edit_text(resp.text, parse_mode=ParseMode.MARKDOWN)
         except:
