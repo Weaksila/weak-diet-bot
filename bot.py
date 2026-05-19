@@ -42,6 +42,9 @@ class ProfileState(StatesGroup):
     waiting_for_weight = State()
     waiting_for_goal = State()
 
+class UserState(StatesGroup):
+    waiting_for_receipt = State()
+
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💎 VIP Obuna", callback_data="show_premium"),
@@ -177,45 +180,86 @@ async def user_cancel_premium(call: CallbackQuery):
     await call.answer()
 
 @dp.callback_query(F.data == "buy_premium")
-async def buy_premium_cb(call: CallbackQuery):
-    user = call.from_user
-    try:
-        uname = f"@{user.username}" if user.username else "username yo'q"
-        admin_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 7 kunlik berish", callback_data=f"give_prem_7_{user.id}")],
-            [InlineKeyboardButton(text="🎁 15 kunlik berish", callback_data=f"give_prem_15_{user.id}")],
-            [InlineKeyboardButton(text="🎁 30 kunlik berish", callback_data=f"give_prem_30_{user.id}")],
-            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="admin_reject_prem")]
-        ])
-        await bot.send_message(
-            ADMIN_ID,
-            f"🔔 *Yangi mijoz!*\n\n"
-            f"👤 Ism: {user.full_name}\n"
-            f"🆔 ID: `{user.id}`\n"
-            f"📱 Username: {uname}\n\n"
-            f"💎 VIP obuna xohlayapti!",
-            reply_markup=admin_kb
-        )
-    except: pass
-    
+async def buy_premium_cb(call: CallbackQuery, state: FSMContext):
     await call.message.edit_text(
-        "✅ *So'rovingiz Adminga yuborildi!*\n\n"
-        "Iltimos, to'lovni amalga oshiring va chekni adminga yuboring. Tez orada obunangiz faollashadi.\n\n"
-        "👉 *Chekni yuborish uchun:* [Adminga yozish](https://t.me/backeer)",
-        reply_markup=None,
-        disable_web_page_preview=True
+        "💳 *To'lovni amalga oshiring:*\n"
+        "`5614 6819 1943 1944`\n\n"
+        "Iltimos, to'lovni amalga oshirganingizdan so'ng, *to'lov chekini (skrinshot)* shu yerga rasm qilib yuboring 👇",
+        parse_mode=ParseMode.MARKDOWN
     )
+    await state.set_state(UserState.waiting_for_receipt)
     await call.answer()
+
+@dp.message(UserState.waiting_for_receipt, F.photo)
+async def process_receipt_photo(message: Message, state: FSMContext):
+    user = message.from_user
+    photo = message.photo[-1]
+    
+    uname = f"@{user.username}" if user.username else "username yo'q"
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ 7 kun", callback_data=f"confirm_prem_7_{user.id}"),
+         InlineKeyboardButton(text="✅ 15 kun", callback_data=f"confirm_prem_15_{user.id}")],
+        [InlineKeyboardButton(text="✅ 30 kun", callback_data=f"confirm_prem_30_{user.id}")],
+        [InlineKeyboardButton(text="❌ Rad etish", callback_data=f"reject_prem_{user.id}")]
+    ])
+    
+    caption = (
+        f"🧾 *Yangi to'lov cheki!*\n\n"
+        f"👤 Ism: {user.full_name}\n"
+        f"🆔 ID: `{user.id}`\n"
+        f"📱 Username: {uname}\n"
+    )
+    
+    try:
+        await bot.send_photo(
+            ADMIN_ID,
+            photo=photo.file_id,
+            caption=caption,
+            reply_markup=admin_kb,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await message.answer("✅ *Chek adminga yuborildi!*\n\nTez orada tasdiqlanadi va obunangiz faollashadi.", parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        await message.answer("❌ Xatolik yuz berdi. Iltimos, keyinroq urinib ko'ring.")
+    
+    await state.clear()
+
+@dp.message(UserState.waiting_for_receipt)
+async def process_receipt_invalid(message: Message, state: FSMContext):
+    if message.text and message.text.startswith('/'):
+        await state.clear()
+        if message.text == '/cancel':
+            await message.answer("❌ Bekor qilindi.")
+        return
+    await message.answer("⚠️ Iltimos, to'lov chekini faqat *RASM* (skrinshot) ko'rinishida yuboring yoki bekor qilish uchun /cancel bosing.")
 
 @dp.callback_query(F.data == "cancel_premium_view")
 async def cancel_premium_view_cb(call: CallbackQuery):
     await call.message.delete()
     await call.answer()
 
-@dp.callback_query(F.data == "admin_reject_prem")
-async def admin_reject_prem_cb(call: CallbackQuery):
+@dp.callback_query(F.data.startswith("confirm_prem_"))
+async def confirm_prem_cb(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID: return
-    await call.message.edit_text("❌ *So'rov bekor qilindi.*")
+    parts = call.data.split("_")
+    days = int(parts[2])
+    uid = int(parts[3])
+    
+    db.make_premium(uid, days)
+    await call.message.edit_caption(caption=f"{call.message.caption}\n\n✅ *{days} kunlik VIP TASDIQLANDI!*", reply_markup=None)
+    try:
+        await bot.send_message(uid, f"🎉 *Tabriklaymiz!* To'lovingiz tasdiqlandi va sizga {days} kunlik *VIP OBUNA* taqdim etildi! Cheksiz foydalaning!")
+    except: pass
+    await call.answer()
+
+@dp.callback_query(F.data.startswith("reject_prem_"))
+async def reject_prem_cb(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID: return
+    uid = int(call.data.split("_")[2])
+    await call.message.edit_caption(caption=f"{call.message.caption}\n\n❌ *RAD ETILDI!*", reply_markup=None)
+    try:
+        await bot.send_message(uid, "❌ To'lovingiz tasdiqlanmadi. Iltimos, ma'lumotlarni qaytadan tekshirib, chekni to'g'ri yuboring yoki admin bilan bog'laning.")
+    except: pass
     await call.answer()
 
 # ─── COMMANDS ────────────────────────────────────────────
