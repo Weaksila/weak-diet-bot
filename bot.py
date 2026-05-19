@@ -17,11 +17,61 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 ADMIN_CODE = "89049032020008885500238921632027"
 
+# Parse multiple API keys if configured as a comma-separated list
+api_keys = [k.strip() for k in GEMINI_API_KEY.split(",") if k.strip()] if GEMINI_API_KEY else []
+current_key_idx = 0
+key_lock = asyncio.Lock()
+
+async def generate_content_with_fallback(contents, is_vip=False):
+    global current_key_idx
+    if not api_keys:
+        raise ValueError("No Gemini API keys configured.")
+        
+    if is_vip:
+        # Prioritize working, responsive models first to ensure successful execution,
+        # fallback to pro/flash models if quota/availability changes.
+        models_to_try = ['gemini-3.1-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-pro', 'gemini-2.5-flash']
+    else:
+        # For free users (3 daily limits), prioritize the lowest/lightest models first to save quota
+        models_to_try = ['gemini-3.1-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.5-flash']
+        
+    last_error = None
+    for model_name in models_to_try:
+        for attempt in range(len(api_keys)):
+            key = api_keys[current_key_idx]
+            try:
+                # Thread/async safe configuration and model setup
+                async with key_lock:
+                    genai.configure(api_key=key)
+                    model = genai.GenerativeModel(model_name)
+                    task = model.generate_content_async(contents)
+                
+                resp = await task
+                print(f"[Gemini Log] Successfully generated content using model {model_name} (Key index: {current_key_idx})")
+                return resp
+            except Exception as e:
+                err_msg = str(e).lower()
+                is_quota = "429" in err_msg or "quota" in err_msg or "rate limit" in err_msg or "limit exceeded" in err_msg
+                
+                if is_quota:
+                    print(f"[Gemini Log] Key index {current_key_idx} exhausted for model {model_name}. Rotating key...")
+                    current_key_idx = (current_key_idx + 1) % len(api_keys)
+                    last_error = e
+                    continue
+                else:
+                    if "404" in err_msg or "not found" in err_msg:
+                        print(f"[Gemini Log] Model {model_name} not available. Moving to next model.")
+                        last_error = e
+                        break # Break current key loop and try next model
+                    
+                    print(f"[Gemini Log] Error {type(e).__name__} for model {model_name} with key index {current_key_idx}: {e}. Rotating key...")
+                    current_key_idx = (current_key_idx + 1) % len(api_keys)
+                    last_error = e
+                    continue
+                    
+    raise last_error
+
 db.init_db()
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    vip_model = genai.GenerativeModel('gemini-2.5-pro')
 
 bot = Bot(token=TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher()
@@ -50,23 +100,23 @@ def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💎 VIP Obuna", callback_data="show_premium"),
          InlineKeyboardButton(text="👤 Profilim", callback_data="show_profile")],
-        [InlineKeyboardButton(text="📋 Mening Menyum (VIP)", callback_data="generate_diet_plan"),
-         InlineKeyboardButton(text="💧 Suv balansi", callback_data="water_tracker")],
-        [InlineKeyboardButton(text="📖 Qo'llanma", callback_data="show_guide"),
-         InlineKeyboardButton(text="🌐 Til", callback_data="show_lang")],
+        [InlineKeyboardButton(text="🥗 Mening Menyum (VIP)", callback_data="generate_diet_plan")],
+        [InlineKeyboardButton(text="💧 Suv balansi", callback_data="water_tracker"),
+         InlineKeyboardButton(text="📖 Qo'llanma", callback_data="show_guide")],
+        [InlineKeyboardButton(text="🌐 Tilni o'zgartirish", callback_data="show_lang")]
     ])
 
 def admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats")],
-        [InlineKeyboardButton(text="👑 Premium berish", callback_data="admin_premium"),
-         InlineKeyboardButton(text="❌ Obuna bekor", callback_data="admin_revoke")],
-        [InlineKeyboardButton(text="📢 Hammaga", callback_data="admin_broadcast"),
-         InlineKeyboardButton(text="✉️ Bitta odamga", callback_data="admin_single_msg")],
-        [InlineKeyboardButton(text="⚙️ Limitni o'zgartirish", callback_data="admin_set_limit"),
+        [InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats"),
          InlineKeyboardButton(text="🔍 Odam qidirish", callback_data="admin_search")],
+        [InlineKeyboardButton(text="👑 Premium berish", callback_data="admin_premium"),
+         InlineKeyboardButton(text="❌ Obunani bekor qilish", callback_data="admin_revoke")],
+        [InlineKeyboardButton(text="📢 Xabar yuborish (Barchaga)", callback_data="admin_broadcast")],
+        [InlineKeyboardButton(text="✉️ Xabar yuborish (Bittaga)", callback_data="admin_single_msg")],
+        [InlineKeyboardButton(text="⚙️ Kunlik limitni o'zgartirish", callback_data="admin_set_limit")],
         [InlineKeyboardButton(text="🚫 Bloklash (Ban)", callback_data="admin_ban"),
-         InlineKeyboardButton(text="✅ Ban yechish", callback_data="admin_unban")],
+         InlineKeyboardButton(text="✅ Bandan yechish", callback_data="admin_unban")],
     ])
 
 # ─── START ───────────────────────────────────────────────
@@ -84,28 +134,47 @@ async def start_cmd(message: Message):
         reply_markup=main_menu_kb()
     )
 
+@dp.callback_query(F.data == "back_to_main")
+async def cb_back_to_main(call: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await call.message.edit_text(
+        "👋 *Salom! Men WEAK — AI dietolog botiman!*\n\n"
+        "📸 Ovqat rasmini yuboring — kaloriya, oqsil, uglevod tahlil qilaman\n"
+        "🧊 Muzlatgich ichini rasmga oling — retsept tuzaman\n"
+        "🔍 Qadoq yorlig'ini yuboring — tarkibini tekshiraman\n"
+        "🎙 Ovozli xabar yuboring — eshitib javob beraman\n\n"
+        "🎁 *Kuniga 3 ta so'rov BEPUL!*",
+        reply_markup=main_menu_kb()
+    )
+    await call.answer()
+
 # ─── MAIN MENU CALLBACKS ──────────────────────────────────
 @dp.callback_query(F.data == "show_guide")
 async def cb_guide(call: CallbackQuery):
-    await call.message.answer(
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
+    ])
+    await call.message.edit_text(
         "📖 *WEAK QO'LLANMASI*\n\n"
-        "*1. Kaloriya hisoblash:* Ovqat rasmini yuboring\n"
-        "*2. Muzlatgichdan retsept:* Xolodilnik ichini rasmga oling\n"
-        "*3. Yorliq skaner:* Qadoq orqasini rasmga oling\n"
-        "*4. Ovozli xabar:* Gapirib yuboring, tushunaman\n"
-        "*5. Profil:* Bo'y/vazn kiriting — shaxsiy maslahat\n"
-        "*6. Til:* /til bilan o'zgartiring"
+        "📸 *1. Kaloriya tahlili:* Ovqat rasmini yuboring\n"
+        "🧊 *2. Muzlatgich retsepti:* Xolodilnik ichini rasmga oling\n"
+        "🔍 *3. Yorliq skaner:* Qadoq orqasini rasmga oling\n"
+        "🎙 *4. Ovozli xabar:* Gapirib yuboring, tushunaman\n"
+        "👤 *5. Profil:* Bo'y/vazn kiriting — shaxsiy maslahat\n"
+        "🌐 *6. Til:* /til orqali tilni o'zgartiring",
+        reply_markup=kb
     )
     await call.answer()
 
 @dp.callback_query(F.data == "show_lang")
 async def cb_lang(call: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data="lang_uz")],
-        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru")],
-        [InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")]
+        [InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data="lang_uz"),
+         InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru")],
+        [InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")],
+        [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
     ])
-    await call.message.answer("🌐 Tilni tanlang:", reply_markup=kb)
+    await call.message.edit_text("🌐 Tilni tanlang / Выберите язык / Select language:", reply_markup=kb)
     await call.answer()
 
 @dp.callback_query(F.data.startswith("lang_"))
@@ -113,7 +182,10 @@ async def process_lang(call: CallbackQuery):
     l = call.data.split("_")[1]
     LANGS = {"uz": "🇺🇿 O'zbekcha", "ru": "🇷🇺 Русский", "en": "🇬🇧 English"}
     db.update_lang(call.from_user.id, l)
-    await call.message.edit_text(f"✅ Til o'zgartirildi: {LANGS[l]}")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
+    ])
+    await call.message.edit_text(f"✅ Til o'zgartirildi: {LANGS[l]}", reply_markup=kb)
     await call.answer()
 
 @dp.callback_query(F.data == "show_profile")
@@ -122,22 +194,29 @@ async def cb_profile(call: CallbackQuery, state: FSMContext):
     if profile and profile[0] > 0:
         h, w, g = profile
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✏️ Yangilash", callback_data="edit_profile")]
+            [InlineKeyboardButton(text="✏️ Profilni yangilash", callback_data="edit_profile")],
+            [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
         ])
-        await call.message.answer(
+        await call.message.edit_text(
             f"👤 *Sizning profilingiz:*\n\n"
-            f"📏 Bo'y: {h} sm\n"
-            f"⚖️ Vazn: {w} kg\n"
-            f"🎯 Maqsad: {g}", reply_markup=kb
+            f"📏 Bo'y: *{h} sm*\n"
+            f"⚖️ Vazn: *{w} kg*\n"
+            f"🎯 Maqsad: *{g}*", reply_markup=kb
         )
     else:
-        await call.message.answer("📏 Bo'yingiz necha sm? (Masalan: 175)")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
+        ])
+        await call.message.edit_text("📏 Bo'yingiz necha sm? (Masalan: 175)", reply_markup=kb)
         await state.set_state(ProfileState.waiting_for_height)
     await call.answer()
 
 @dp.callback_query(F.data == "edit_profile")
 async def cb_edit_profile(call: CallbackQuery, state: FSMContext):
-    await call.message.answer("📏 Yangi bo'yingizni kiriting (sm):")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
+    ])
+    await call.message.edit_text("📏 Yangi bo'yingizni kiriting (sm):", reply_markup=kb)
     await state.set_state(ProfileState.waiting_for_height)
     await call.answer()
 
@@ -147,19 +226,20 @@ async def cb_premium(call: CallbackQuery):
     is_vip = db.is_premium(user.id)
     if is_vip:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Obunani bekor qilish", callback_data="user_cancel_premium")]
+            [InlineKeyboardButton(text="❌ Obunani bekor qilish", callback_data="user_cancel_premium")],
+            [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
         ])
-        await call.message.answer("✅ *Siz hozir VIP foydalanuvchisiz!*\n\nCheksiz so'rovlardan bahramand bo'ling.", reply_markup=kb)
+        await call.message.edit_text("✅ *Siz hozir VIP foydalanuvchisiz!*\n\nCheksiz so'rovlardan bahramand bo'ling.", reply_markup=kb)
     else:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💎 Olish", callback_data="buy_premium"),
-             InlineKeyboardButton(text="⏳ Keyinroq", callback_data="cancel_premium_view")]
+            [InlineKeyboardButton(text="💎 VIP Sotib olish", callback_data="buy_premium")],
+            [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
         ])
-        await call.message.answer(
+        await call.message.edit_text(
             "💎 *VIP OBUNA — Cheksiz foydalanish!*\n\n"
             "Oddiy foydalanuvchilar kuniga faqat 3 ta so'rov yuborishi mumkin. VIP bilan:\n"
             "✅ Cheksiz rasmlar va savollar\n"
-            "✅ Yuqori tezlik\n\n"
+            "✅ Yuqori tezlik va zaxira modellar\n\n"
             "💰 *Tariflar:*\n"
             "🔹 7 kunlik — 20,000 so'm\n"
             "🔹 15 kunlik — 40,000 so'm\n"
@@ -174,21 +254,29 @@ async def cb_premium(call: CallbackQuery):
 
 @dp.callback_query(F.data == "user_cancel_premium")
 async def user_cancel_premium(call: CallbackQuery):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="show_premium")]
+    ])
     await call.message.edit_text(
         "❌ *Obunani bekor qilish*\n\n"
-        "Obunangizni bekor qilish uchun adminга murojaat qiling:\n"
+        "Obunangizni bekor qilish uchun adminga murojaat qiling:\n"
         "📞 [Admin](https://t.me/backeer)",
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
+        reply_markup=kb
     )
     await call.answer()
 
 @dp.callback_query(F.data == "buy_premium")
 async def buy_premium_cb(call: CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Orqaga", callback_data="show_premium")]
+    ])
     await call.message.edit_text(
         "💳 *To'lovni amalga oshiring:*\n"
         "`5614 6819 1943 1944`\n\n"
         "Iltimos, to'lovni amalga oshirganingizdan so'ng, *to'lov chekini (skrinshot)* shu yerga rasm qilib yuboring 👇",
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=kb
     )
     await state.set_state(UserState.waiting_for_receipt)
     await call.answer()
@@ -272,14 +360,15 @@ async def premium_cmd(message: Message):
     is_vip = db.is_premium(user.id)
     if is_vip:
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Obunani bekor qilish", callback_data="user_cancel_premium")]
+            [InlineKeyboardButton(text="❌ Obunani bekor qilish", callback_data="user_cancel_premium")],
+            [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
         ])
         await message.answer("✅ *Siz hozir VIP foydalanuvchisiz!*\n\nCheksiz so'rovlardan bahramand bo'ling.", reply_markup=kb)
         return
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💎 Olish", callback_data="buy_premium"),
-         InlineKeyboardButton(text="⏳ Keyinroq", callback_data="cancel_premium_view")]
+        [InlineKeyboardButton(text="💎 VIP Sotib olish", callback_data="buy_premium")],
+        [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
     ])
     await message.answer(
         "💎 *VIP OBUNA — Cheksiz foydalanish!*\n\n"
@@ -297,11 +386,22 @@ async def profile_cmd(message: Message, state: FSMContext):
     profile = db.get_profile(message.from_user.id)
     if profile and profile[0] > 0:
         h, w, g = profile
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Profilni yangilash", callback_data="edit_profile")],
+            [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
+        ])
         await message.answer(
-            f"👤 *Profilingiz:*\n📏 Bo'y: {h} sm\n⚖️ Vazn: {w} kg\n🎯 Maqsad: {g}\n\n"
-            "Yangilash uchun /update_profile")
+            f"👤 *Profilingiz:*\n\n"
+            f"📏 Bo'y: *{h} sm*\n"
+            f"⚖️ Vazn: *{w} kg*\n"
+            f"🎯 Maqsad: *{g}*",
+            reply_markup=kb
+        )
     else:
-        await message.answer("📏 Bo'yingiz necha sm? (Masalan: 175)")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
+        ])
+        await message.answer("📏 Bo'yingiz necha sm? (Masalan: 175)", reply_markup=kb)
         await state.set_state(ProfileState.waiting_for_height)
 
 @dp.callback_query(F.data == "generate_diet_plan")
@@ -332,7 +432,7 @@ async def generate_diet_plan_cb(call: CallbackQuery):
     )
     
     try:
-        resp = await vip_model.generate_content_async([prompt])
+        resp = await generate_content_with_fallback([prompt], is_vip=True)
         await wait_msg.edit_text(resp.text, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         try:
@@ -346,7 +446,8 @@ async def water_tracker_cb(call: CallbackQuery):
     uid = call.from_user.id
     w = db.get_water(uid)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🥛 +1 stakan (250 ml)", callback_data="add_water_250")]
+        [InlineKeyboardButton(text="🥛 +1 stakan (250 ml)", callback_data="add_water_250")],
+        [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
     ])
     try:
         await call.message.edit_text(
@@ -373,11 +474,12 @@ async def update_profile_cmd(message: Message, state: FSMContext):
 @dp.message(Command("til"))
 async def lang_cmd(message: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data="lang_uz")],
-        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru")],
-        [InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")]
+        [InlineKeyboardButton(text="🇺🇿 O'zbekcha", callback_data="lang_uz"),
+         InlineKeyboardButton(text="🇷🇺 Русский", callback_data="lang_ru")],
+        [InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en")],
+        [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
     ])
-    await message.answer("🌐 Tilni tanlang:", reply_markup=kb)
+    await message.answer("🌐 Tilni tanlang / Выберите язык / Select language:", reply_markup=kb)
 
 @dp.message(Command("qollanma"))
 async def guide_cmd(message: Message):
@@ -417,9 +519,9 @@ async def process_weight(message: Message, state: FSMContext):
         w = int(message.text)
         await state.update_data(weight=w)
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📉 Ozish", callback_data="goal_ozish")],
-            [InlineKeyboardButton(text="⚖️ Vaznni saqlash", callback_data="goal_saqlash")],
-            [InlineKeyboardButton(text="💪 Mushak oshirish", callback_data="goal_mushak")]
+            [InlineKeyboardButton(text="📉 Ozish (Defitsit)", callback_data="goal_ozish")],
+            [InlineKeyboardButton(text="⚖️ Hozirgi vaznni saqlash", callback_data="goal_saqlash")],
+            [InlineKeyboardButton(text="💪 Mushak massasini oshirish", callback_data="goal_mushak")]
         ])
         await message.answer("🎯 Maqsadingiz?", reply_markup=kb)
         await state.set_state(ProfileState.waiting_for_goal)
@@ -433,7 +535,10 @@ async def process_goal(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     db.update_profile(call.from_user.id, data['height'], data['weight'], g)
     await state.clear()
-    await call.message.edit_text("✅ Profil saqlandi! Endi shaxsiy maslahatlar olasiz.")
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
+    ])
+    await call.message.edit_text("✅ Profil muvaffaqiyatli saqlandi! Endi bot sizning parametrlaringiz bo'yicha maslahat beradi.", reply_markup=kb)
 
 # ─── ADMIN PANEL ──────────────────────────────────────────
 @dp.message(F.text == ADMIN_CODE)
@@ -790,7 +895,7 @@ async def process_request(message: Message, input_type: str):
         )
         return
 
-    if not GEMINI_API_KEY:
+    if not api_keys:
         await message.answer("⚠️ API kaliti topilmadi.")
         return
 
@@ -858,8 +963,9 @@ async def process_request(message: Message, input_type: str):
         elif input_type == "text":
             contents.append(message.text)
 
-        active_model = vip_model if is_vip else model
-        resp = await active_model.generate_content_async(contents)
+        resp = await generate_content_with_fallback(contents, is_vip=is_vip)
+        if not is_vip:
+            await asyncio.sleep(5)  # Sun'iy sekinlashtirish (VIP obuna afzalligini ko'rsatish uchun)
         try:
             await wait_msg.edit_text(resp.text, parse_mode=ParseMode.MARKDOWN)
         except:
