@@ -21,6 +21,7 @@ db.init_db()
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
     model = genai.GenerativeModel('gemini-2.5-flash')
+    vip_model = genai.GenerativeModel('gemini-2.5-pro')
 
 bot = Bot(token=TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
 dp = Dispatcher()
@@ -745,8 +746,15 @@ async def process_request(message: Message, input_type: str):
             personal = (f"\n\nFOYDALANUVCHI: bo'y={h}sm, vazn={w}kg, maqsad={g}. "
                        "Maslahatni aynan shunga moslang.")
 
-        prompt = (
+        prompt_prefix = (
+            f"Siz WEAK — yuqori toifali (PRO) professional AI dietolog botisiz. Javobingiz {target_lang} tilida bo'lsin.\n"
+            "Mijozingiz VIP maqomiga ega, shuning uchun taom tarkibi va ta'siri haqida ilmiy asoslangan, eng chuqur va aniq (Premium) tahlil bering.\n"
+        ) if is_vip else (
             f"Siz WEAK — professional AI dietolog botisiz. Javobingiz {target_lang} bo'lsin.\n"
+        )
+
+        prompt = (
+            prompt_prefix +
             "Foydalanuvchi yuborgan rasm yoki matndagi taomni diqqat bilan tahlil qiling va AYNAN quyidagi shablon bo'yicha javob bering. Hech qanday salom-alik yoki ortiqcha gaplarsiz, faqat shablondagi ma'lumotlarni yozing:\n\n"
             "---\n\n"
             "### [Taom yoki mahsulot nomi] Ozuqaviy Tahlili (taxminan [vazni/porsiyasi] uchun)\n\n"
@@ -783,7 +791,8 @@ async def process_request(message: Message, input_type: str):
         elif input_type == "text":
             contents.append(message.text)
 
-        resp = await model.generate_content_async(contents)
+        active_model = vip_model if is_vip else model
+        resp = await active_model.generate_content_async(contents)
         try:
             await wait_msg.edit_text(resp.text, parse_mode=ParseMode.MARKDOWN)
         except:
