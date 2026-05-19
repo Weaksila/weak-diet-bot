@@ -33,6 +33,9 @@ class AdminState(StatesGroup):
     waiting_for_search_id = State()
     waiting_for_ban_id = State()
     waiting_for_unban_id = State()
+    waiting_for_prem_id = State()
+    waiting_for_prem_days = State()
+    waiting_for_revoke_id = State()
 
 class ProfileState(StatesGroup):
     waiting_for_height = State()
@@ -195,7 +198,13 @@ async def buy_premium_cb(call: CallbackQuery):
         )
     except: pass
     
-    await call.message.edit_text("✅ *So'rovingiz Adminga yuborildi!*\n\nIltimos, to'lovni amalga oshiring va chekni adminga yuboring. Tez orada obunangiz faollashadi.", reply_markup=None)
+    await call.message.edit_text(
+        "✅ *So'rovingiz Adminga yuborildi!*\n\n"
+        "Iltimos, to'lovni amalga oshiring va chekni adminga yuboring. Tez orada obunangiz faollashadi.\n\n"
+        "👉 *Chekni yuborish uchun:* [Adminga yozish](https://t.me/backeer)",
+        reply_markup=None,
+        disable_web_page_preview=True
+    )
     await call.answer()
 
 @dp.callback_query(F.data == "cancel_premium_view")
@@ -361,19 +370,46 @@ async def admin_users(call: CallbackQuery):
     await call.answer()
 
 @dp.callback_query(F.data == "admin_premium")
-async def admin_premium_cb(call: CallbackQuery):
+async def admin_premium_cb(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID: return
-    users = db.get_recent_users()
-    if not users:
-        await call.message.answer("Foydalanuvchilar yo'q.")
-        await call.answer()
-        return
-    keyboard = []
-    for uid, name, uname in users:
-        label = (name or uname or str(uid))[:22]
-        keyboard.append([InlineKeyboardButton(text=f"👤 {label}", callback_data=f"give_prem_30_{uid}")])
-    await call.message.answer("👑 30 kunlik VIP bermoqchi bo'lgan foydalanuvchini tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await call.message.answer("👑 VIP bermoqchi bo'lgan foydalanuvchining ID raqamini kiriting:")
+    await state.set_state(AdminState.waiting_for_prem_id)
     await call.answer()
+
+@dp.message(AdminState.waiting_for_prem_id)
+async def process_prem_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.")
+        return
+    try:
+        uid = int(message.text)
+        await state.update_data(prem_uid=uid)
+        await message.answer(f"✅ ID qabul qilindi. Endi necha kun VIP bermoqchisiz? (raqamda kiriting, masalan: 30)")
+        await state.set_state(AdminState.waiting_for_prem_days)
+    except ValueError:
+        await message.answer("❌ Noto'g'ri ID. Faqat raqam kiriting.")
+
+@dp.message(AdminState.waiting_for_prem_days)
+async def process_prem_days(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.")
+        return
+    try:
+        days = int(message.text)
+        data = await state.get_data()
+        uid = data['prem_uid']
+        db.make_premium(uid, days)
+        await message.answer(f"✅ ID {uid} ga {days} kunlik VIP obuna taqdim etildi!")
+        try:
+            await bot.send_message(uid, f"🎉 *Tabriklaymiz!* Sizga Admin tomonidan {days} kunlik *VIP OBUNA* taqdim etildi! Cheksiz foydalaning!")
+        except: pass
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Faqat raqam kiriting.")
 
 @dp.callback_query(F.data.startswith("give_prem_"))
 async def give_prem_cb(call: CallbackQuery):
@@ -394,29 +430,29 @@ async def give_prem_cb(call: CallbackQuery):
     except: pass
 
 @dp.callback_query(F.data == "admin_revoke")
-async def admin_revoke_cb(call: CallbackQuery):
+async def admin_revoke_cb(call: CallbackQuery, state: FSMContext):
     if call.from_user.id != ADMIN_ID: return
-    users = db.get_premium_users()
-    if not users:
-        await call.message.answer("Hozircha VIP foydalanuvchilar yo'q.")
-        await call.answer()
-        return
-    keyboard = []
-    for uid, name, uname, exp in users:
-        label = (name or uname or str(uid))[:20]
-        keyboard.append([InlineKeyboardButton(text=f"❌ {label}", callback_data=f"revoke_{uid}")])
-    await call.message.answer("❌ Obunasini bekor qilish uchun foydalanuvchini tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard))
+    await call.message.answer("❌ Obunasini bekor qilmoqchi bo'lgan foydalanuvchining ID raqamini kiriting:")
+    await state.set_state(AdminState.waiting_for_revoke_id)
     await call.answer()
 
-@dp.callback_query(F.data.startswith("revoke_"))
-async def revoke_cb(call: CallbackQuery):
-    if call.from_user.id != ADMIN_ID: return
-    uid = int(call.data.split("_")[1])
-    db.revoke_premium(uid)
-    await call.message.edit_text(f"✅ {uid} ning VIP obunasi bekor qilindi!")
+@dp.message(AdminState.waiting_for_revoke_id)
+async def process_revoke_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.")
+        return
     try:
-        await bot.send_message(uid, "ℹ️ VIP obunangiz bekor qilindi. Yangilash uchun /premium ni bosing.")
-    except: pass
+        uid = int(message.text)
+        db.revoke_premium(uid)
+        await message.answer(f"✅ ID {uid} ning VIP obunasi bekor qilindi!")
+        try:
+            await bot.send_message(uid, "ℹ️ VIP obunangiz bekor qilindi. Yangilash uchun /premium ni bosing.")
+        except: pass
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Noto'g'ri ID kiritildi.")
 
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_cb(call: CallbackQuery, state: FSMContext):
