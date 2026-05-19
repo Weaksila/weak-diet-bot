@@ -32,7 +32,8 @@ def init_db():
         "goal TEXT DEFAULT ''",
         "lang TEXT DEFAULT 'uz'",
         "premium_expire_date TEXT",
-        "is_banned BOOLEAN DEFAULT 0"
+        "is_banned BOOLEAN DEFAULT 0",
+        "water_drank INTEGER DEFAULT 0"
     ]
     for col in columns_to_add:
         try:
@@ -104,6 +105,32 @@ def get_user_details(user_id):
     conn.close()
     return user_dict
 
+def get_water(user_id):
+    today = datetime.date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT water_drank, last_usage_date FROM users WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    if not res:
+        conn.close()
+        return 0
+    w, d = res
+    if d != today:
+        cursor.execute("UPDATE users SET water_drank = 0, last_usage_date = ? WHERE user_id = ?", (today, user_id))
+        conn.commit()
+        conn.close()
+        return 0
+    conn.close()
+    return w
+
+def add_water(user_id, amount):
+    w = get_water(user_id)
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET water_drank = water_drank + ? WHERE user_id = ?", (amount, user_id))
+    conn.commit()
+    conn.close()
+
 def is_premium(user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -145,7 +172,7 @@ def check_and_update_limit(user_id):
     free_limit = get_free_limit()
     
     if last_usage_date != today:
-        cursor.execute("UPDATE users SET daily_usage = 1, last_usage_date = ? WHERE user_id = ?", (today, user_id))
+        cursor.execute("UPDATE users SET daily_usage = 1, water_drank = 0, last_usage_date = ? WHERE user_id = ?", (today, user_id))
         conn.commit()
         conn.close()
         return free_limit > 0

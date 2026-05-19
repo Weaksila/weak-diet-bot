@@ -50,7 +50,8 @@ def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💎 VIP Obuna", callback_data="show_premium"),
          InlineKeyboardButton(text="👤 Profilim", callback_data="show_profile")],
-        [InlineKeyboardButton(text="📋 Mening Menyum (VIP)", callback_data="generate_diet_plan")],
+        [InlineKeyboardButton(text="📋 Mening Menyum (VIP)", callback_data="generate_diet_plan"),
+         InlineKeyboardButton(text="💧 Suv balansi", callback_data="water_tracker")],
         [InlineKeyboardButton(text="📖 Qo'llanma", callback_data="show_guide"),
          InlineKeyboardButton(text="🌐 Til", callback_data="show_lang")],
     ])
@@ -339,6 +340,30 @@ async def generate_diet_plan_cb(call: CallbackQuery):
         except:
             await wait_msg.edit_text("❌ Xatolik yuz berdi. Iltimos, keyinroq urinib ko'ring.")
     await call.answer()
+
+@dp.callback_query(F.data == "water_tracker")
+async def water_tracker_cb(call: CallbackQuery):
+    uid = call.from_user.id
+    w = db.get_water(uid)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🥛 +1 stakan (250 ml)", callback_data="add_water_250")]
+    ])
+    try:
+        await call.message.edit_text(
+            f"💧 *Suv Balansi*\n\n"
+            f"Bugun ichilgan suv: *{w} ml*\n"
+            f"Kunlik norma: ~2000 ml\n\n"
+            f"Har safar suv ichganingizda quyidagi tugmani bosing!", 
+            parse_mode=ParseMode.MARKDOWN, 
+            reply_markup=kb
+        )
+    except: pass
+    await call.answer()
+
+@dp.callback_query(F.data == "add_water_250")
+async def add_water_cb(call: CallbackQuery):
+    db.add_water(call.from_user.id, 250)
+    await water_tracker_cb(call)
 
 @dp.message(Command("update_profile"))
 async def update_profile_cmd(message: Message, state: FSMContext):
@@ -856,6 +881,26 @@ async def process_request(message: Message, input_type: str):
 async def handle_web(request):
     return web.Response(text="WEAK Dietolog Bot is running!")
 
+async def nightly_cron():
+    import datetime
+    while True:
+        now = datetime.datetime.now()
+        if now.hour == 23 and now.minute == 0:
+            uids = db.get_all_user_ids()
+            for uid in uids:
+                try:
+                    await bot.send_message(
+                        uid, 
+                        "🌙 *Xayrli kech!*\n\n"
+                        "Bugun maqsadingiz sari nimalar qildingiz? Rejimni buzmadingizmi?\n"
+                        "Istalgan savol yoki dardingiz bo'lsa menga yozing, men AI psixolog sifatida sizga dalda berishga va ertangi kunga motivatsiya berishga tayyorman!",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    await asyncio.sleep(0.05)
+                except: pass
+            await asyncio.sleep(60)
+        await asyncio.sleep(30)
+
 async def main():
     app = web.Application()
     app.router.add_get('/', handle_web)
@@ -868,6 +913,8 @@ async def main():
     
     print(f"Web server started on port {port}")
     print("WEAK Bot ishga tushdi!")
+    
+    asyncio.create_task(nightly_cron())
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
