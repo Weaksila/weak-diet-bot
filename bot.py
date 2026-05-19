@@ -30,6 +30,9 @@ class AdminState(StatesGroup):
     waiting_for_single_msg_id = State()
     waiting_for_single_msg_text = State()
     waiting_for_new_limit = State()
+    waiting_for_search_id = State()
+    waiting_for_ban_id = State()
+    waiting_for_unban_id = State()
 
 class ProfileState(StatesGroup):
     waiting_for_height = State()
@@ -51,13 +54,16 @@ def admin_menu_kb():
          InlineKeyboardButton(text="❌ Obuna bekor", callback_data="admin_revoke")],
         [InlineKeyboardButton(text="📢 Hammaga", callback_data="admin_broadcast"),
          InlineKeyboardButton(text="✉️ Bitta odamga", callback_data="admin_single_msg")],
-        [InlineKeyboardButton(text="⚙️ Limitni o'zgartirish", callback_data="admin_set_limit")],
-        [InlineKeyboardButton(text="👥 Foydalanuvchilar", callback_data="admin_users")],
+        [InlineKeyboardButton(text="⚙️ Limitni o'zgartirish", callback_data="admin_set_limit"),
+         InlineKeyboardButton(text="🔍 Odam qidirish", callback_data="admin_search")],
+        [InlineKeyboardButton(text="🚫 Bloklash (Ban)", callback_data="admin_ban"),
+         InlineKeyboardButton(text="✅ Ban yechish", callback_data="admin_unban")],
     ])
 
 # ─── START ───────────────────────────────────────────────
 @dp.message(CommandStart())
 async def start_cmd(message: Message):
+    if db.is_banned(message.from_user.id): return
     db.add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
     await message.answer(
         "👋 *Salom! Men WEAK — AI dietolog botiman!*\n\n"
@@ -453,6 +459,90 @@ async def process_new_limit(message: Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Noto'g'ri. Faqat musbat raqam kiriting (yoki bekor qilish uchun /cancel).")
 
+@dp.callback_query(F.data == "admin_search")
+async def admin_search_cb(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID: return
+    await call.message.answer("🔍 Mijozning ID raqamini kiriting:")
+    await state.set_state(AdminState.waiting_for_search_id)
+    await call.answer()
+
+@dp.message(AdminState.waiting_for_search_id)
+async def process_search_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.")
+        return
+    try:
+        target_id = int(message.text)
+        user_info = db.get_user_details(target_id)
+        if not user_info:
+            await message.answer("❌ Bunday ID ga ega mijoz topilmadi.")
+        else:
+            is_vip = "✅ VIP" if user_info.get('is_premium') else "❌ Yo'q"
+            banned = "🚫 BLOKLANGAN" if user_info.get('is_banned') else "✅ Faol"
+            exp = user_info.get('premium_expire_date') or "Yo'q"
+            info = (
+                f"👤 *Mijoz ma'lumotlari:*\n\n"
+                f"Ismi: {user_info.get('full_name')}\n"
+                f"Username: {user_info.get('username')}\n"
+                f"ID: `{user_info.get('user_id')}`\n\n"
+                f"💎 VIP status: {is_vip} (Tugash: {exp})\n"
+                f"📊 Bugungi ishlatishlar: {user_info.get('daily_usage')} ta\n"
+                f"⚙️ Holati: {banned}\n\n"
+                f"📏 Bo'y: {user_info.get('height')} sm | ⚖️ Vazn: {user_info.get('weight')} kg\n"
+                f"🎯 Maqsad: {user_info.get('goal')}\n"
+                f"🌐 Til: {user_info.get('lang')}"
+            )
+            await message.answer(info)
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Noto'g'ri ID kiritildi.")
+
+@dp.callback_query(F.data == "admin_ban")
+async def admin_ban_cb(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID: return
+    await call.message.answer("🚫 Bloklanadigan foydalanuvchi ID sini kiriting:")
+    await state.set_state(AdminState.waiting_for_ban_id)
+    await call.answer()
+
+@dp.message(AdminState.waiting_for_ban_id)
+async def process_ban_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.")
+        return
+    try:
+        target_id = int(message.text)
+        db.ban_user(target_id)
+        await message.answer(f"✅ ID {target_id} muvaffaqiyatli BLOKLANDI!")
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Noto'g'ri ID kiritildi.")
+
+@dp.callback_query(F.data == "admin_unban")
+async def admin_unban_cb(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID: return
+    await call.message.answer("✅ Bandan yechiladigan foydalanuvchi ID sini kiriting:")
+    await state.set_state(AdminState.waiting_for_unban_id)
+    await call.answer()
+
+@dp.message(AdminState.waiting_for_unban_id)
+async def process_unban_id(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.")
+        return
+    try:
+        target_id = int(message.text)
+        db.unban_user(target_id)
+        await message.answer(f"✅ ID {target_id} dan ban yechildi!")
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Noto'g'ri ID kiritildi.")
+
 @dp.message(Command("cancel"))
 async def cancel_cmd(message: Message, state: FSMContext):
     await state.clear()
@@ -521,8 +611,10 @@ async def fallback(message: Message):
         await message.answer("🤖 Rasm, matn yoki ovozli xabar yuboring.")
 
 async def process_request(message: Message, input_type: str):
-    db.add_user(message.from_user.id, message.from_user.full_name, message.from_user.username)
     uid = message.from_user.id
+    if db.is_banned(uid): return
+
+    db.add_user(uid, message.from_user.full_name, message.from_user.username)
 
     is_vip = False
     if uid == ADMIN_ID:

@@ -31,7 +31,8 @@ def init_db():
         "weight INTEGER DEFAULT 0",
         "goal TEXT DEFAULT ''",
         "lang TEXT DEFAULT 'uz'",
-        "premium_expire_date TEXT"
+        "premium_expire_date TEXT",
+        "is_banned BOOLEAN DEFAULT 0"
     ]
     for col in columns_to_add:
         try:
@@ -67,6 +68,41 @@ def set_free_limit(limit):
     cursor.execute("UPDATE settings SET value = ? WHERE key = 'free_limit'", (limit,))
     conn.commit()
     conn.close()
+
+def ban_user(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_banned = 1 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def unban_user(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET is_banned = 0 WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def is_banned(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return bool(res and res[0])
+
+def get_user_details(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+    res = cursor.fetchone()
+    if not res:
+        conn.close()
+        return None
+    columns = [description[0] for description in cursor.description]
+    user_dict = dict(zip(columns, res))
+    conn.close()
+    return user_dict
 
 def is_premium(user_id):
     conn = sqlite3.connect(DB_PATH)
