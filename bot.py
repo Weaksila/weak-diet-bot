@@ -29,6 +29,7 @@ class AdminState(StatesGroup):
     waiting_for_broadcast = State()
     waiting_for_single_msg_id = State()
     waiting_for_single_msg_text = State()
+    waiting_for_new_limit = State()
 
 class ProfileState(StatesGroup):
     waiting_for_height = State()
@@ -50,6 +51,7 @@ def admin_menu_kb():
          InlineKeyboardButton(text="❌ Obuna bekor", callback_data="admin_revoke")],
         [InlineKeyboardButton(text="📢 Hammaga", callback_data="admin_broadcast"),
          InlineKeyboardButton(text="✉️ Bitta odamga", callback_data="admin_single_msg")],
+        [InlineKeyboardButton(text="⚙️ Limitni o'zgartirish", callback_data="admin_set_limit")],
         [InlineKeyboardButton(text="👥 Foydalanuvchilar", callback_data="admin_users")],
     ])
 
@@ -424,6 +426,33 @@ async def admin_single_msg_cb(call: CallbackQuery, state: FSMContext):
     await state.set_state(AdminState.waiting_for_single_msg_id)
     await call.answer()
 
+@dp.callback_query(F.data == "admin_set_limit")
+async def admin_set_limit_cb(call: CallbackQuery, state: FSMContext):
+    if call.from_user.id != ADMIN_ID: return
+    current_limit = db.get_free_limit()
+    await call.message.answer(
+        f"⚙️ Hozirgi kunlik bepul limit: *{current_limit} ta*\n\n"
+        "Yangi limitni raqamda kiriting (0 qilsangiz bepul xizmat butunlay to'xtaydi):"
+    )
+    await state.set_state(AdminState.waiting_for_new_limit)
+    await call.answer()
+
+@dp.message(AdminState.waiting_for_new_limit)
+async def process_new_limit(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID: return
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("❌ Bekor qilindi.")
+        return
+    try:
+        new_limit = int(message.text)
+        if new_limit < 0: raise ValueError
+        db.set_free_limit(new_limit)
+        await message.answer(f"✅ Bepul limit barcha uchun *{new_limit}* taga o'zgartirildi!")
+        await state.clear()
+    except ValueError:
+        await message.answer("❌ Noto'g'ri. Faqat musbat raqam kiriting (yoki bekor qilish uchun /cancel).")
+
 @dp.message(Command("cancel"))
 async def cancel_cmd(message: Message, state: FSMContext):
     await state.clear()
@@ -507,9 +536,14 @@ async def process_request(message: Message, input_type: str):
             has_limit = db.check_and_update_limit(uid)
 
     if not has_limit:
+        free_limit = db.get_free_limit()
+        if free_limit == 0:
+            msg = "⚠️ *Hozirda bepul xizmat vaqtincha to'xtatilgan!*\n\nBotdan cheksiz foydalanish uchun VIP xarid qiling 👇"
+        else:
+            msg = f"⚠️ *Kunlik bepul limitingiz tugadi!* (kuniga {free_limit} ta so'rov)\n\nCheksiz foydalanish uchun VIP xarid qiling! 👇"
+            
         await message.answer(
-            "⚠️ *Kunlik bepul limitingiz tugadi!* (kuniga 3 ta so'rov)\n\n"
-            "Cheksiz foydalanish uchun VIP xarid qiling! 👇",
+            msg,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="💎 VIP Olish", callback_data="show_premium")]
             ])

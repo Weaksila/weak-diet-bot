@@ -15,6 +15,14 @@ def init_db():
         )
     ''')
     
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value INTEGER
+        )
+    ''')
+    cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('free_limit', 3)")
+    
     columns_to_add = [
         "is_premium BOOLEAN DEFAULT 0",
         "daily_usage INTEGER DEFAULT 0",
@@ -43,6 +51,21 @@ def add_user(user_id, full_name, username):
         conn.commit()
     except sqlite3.IntegrityError:
         pass
+    conn.close()
+
+def get_free_limit():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM settings WHERE key = 'free_limit'")
+    res = cursor.fetchone()
+    conn.close()
+    return res[0] if res else 3
+
+def set_free_limit(limit):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE settings SET value = ? WHERE key = 'free_limit'", (limit,))
+    conn.commit()
     conn.close()
 
 def is_premium(user_id):
@@ -83,13 +106,15 @@ def check_and_update_limit(user_id):
         
     daily_usage, last_usage_date = result
     
+    free_limit = get_free_limit()
+    
     if last_usage_date != today:
         cursor.execute("UPDATE users SET daily_usage = 1, last_usage_date = ? WHERE user_id = ?", (today, user_id))
         conn.commit()
         conn.close()
-        return True
+        return free_limit > 0
     
-    if daily_usage < 3: # 3 ta rasm bepul
+    if daily_usage < free_limit: 
         cursor.execute("UPDATE users SET daily_usage = daily_usage + 1 WHERE user_id = ?", (user_id,))
         conn.commit()
         conn.close()
