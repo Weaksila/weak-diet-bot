@@ -50,6 +50,7 @@ def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💎 VIP Obuna", callback_data="show_premium"),
          InlineKeyboardButton(text="👤 Profilim", callback_data="show_profile")],
+        [InlineKeyboardButton(text="📋 Mening Menyum (VIP)", callback_data="generate_diet_plan")],
         [InlineKeyboardButton(text="📖 Qo'llanma", callback_data="show_guide"),
          InlineKeyboardButton(text="🌐 Til", callback_data="show_lang")],
     ])
@@ -301,6 +302,43 @@ async def profile_cmd(message: Message, state: FSMContext):
     else:
         await message.answer("📏 Bo'yingiz necha sm? (Masalan: 175)")
         await state.set_state(ProfileState.waiting_for_height)
+
+@dp.callback_query(F.data == "generate_diet_plan")
+async def generate_diet_plan_cb(call: CallbackQuery):
+    uid = call.from_user.id
+    if not (uid == ADMIN_ID or db.is_premium(uid)):
+        await call.message.answer("⚠️ Ushbu funksiya faqat *VIP mijozlar* uchun ochiq!\n\nVIP olish uchun /premium ni bosing.")
+        await call.answer()
+        return
+        
+    profile = db.get_profile(uid)
+    if not profile or profile[0] == 0:
+        await call.message.answer("⚠️ Avval profilingizni to'ldiring! (Bo'y, vazn, maqsad)\n/profil ni bosing.")
+        await call.answer()
+        return
+        
+    h, w, g = profile
+    wait_msg = await call.message.answer("⏳ *Sizning shaxsiy 1 haftalik menyuingiz tuzilmoqda...*\n_(Bu biroz vaqt olishi mumkin)_", parse_mode=ParseMode.MARKDOWN)
+    
+    prompt = (
+        f"Siz yuqori toifali (PRO) professional AI dietologsiz. Mijozning ko'rsatkichlari:\n"
+        f"Bo'yi: {h} sm\n"
+        f"Vazni: {w} kg\n"
+        f"Maqsadi: {g}\n\n"
+        f"Iltimos, ushbu mijoz uchun AYNAN uning maqsadiga moslashtirilgan *1 haftalik (Dushanba-Yakshanba)* aniq ovqatlanish jadvalini (menyu) yozib bering.\n"
+        f"Har bir kun uchun: Nonushta, Tushlik, Kechki ovqat (va oraliq snek) mahsulotlari, grammlari va taxminiy kaloriyalari kiritilsin.\n"
+        f"Javob faqat O'zbek tilida, chiroyli formatda va professional darajada bo'lsin."
+    )
+    
+    try:
+        resp = await vip_model.generate_content_async([prompt])
+        await wait_msg.edit_text(resp.text, parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        try:
+            await wait_msg.edit_text(resp.text, parse_mode=None)
+        except:
+            await wait_msg.edit_text("❌ Xatolik yuz berdi. Iltimos, keyinroq urinib ko'ring.")
+    await call.answer()
 
 @dp.message(Command("update_profile"))
 async def update_profile_cmd(message: Message, state: FSMContext):
@@ -678,13 +716,17 @@ async def handle_photo(message: Message):
 
 @dp.message(F.voice)
 async def handle_voice(message: Message):
-    lang_code = db.get_lang(message.from_user.id)
-    msg_text = {
-        "uz": "🎙 *Ovozli xabarlar xizmati vaqtincha faol emas!* Iltimos, savolingizni matn yoki rasm ko'rinishida yuboring.",
-        "ru": "🎙 *Голосовые сообщения временно отключены!* Пожалуйста, отправьте ваш вопрос текстом или картинкой.",
-        "en": "🎙 *Voice messages are temporarily disabled!* Please send your question as text or photo."
-    }
-    await message.answer(msg_text.get(lang_code, msg_text["uz"]))
+    uid = message.from_user.id
+    if uid == ADMIN_ID or db.is_premium(uid):
+        await process_request(message, "voice")
+    else:
+        lang_code = db.get_lang(uid)
+        msg_text = {
+            "uz": "🎙 *Ovozli xabarlar xizmati faqat VIP mijozlar uchun!* Iltimos, VIP obuna xarid qiling yoki savolingizni matn ko'rinishida yuboring.",
+            "ru": "🎙 *Голосовые сообщения только для VIP клиентов!* Приобретите VIP или отправьте текст.",
+            "en": "🎙 *Voice messages are for VIP clients only!* Get a VIP subscription or send text."
+        }
+        await message.answer(msg_text.get(lang_code, msg_text["uz"]))
 
 @dp.message()
 async def fallback(message: Message):
