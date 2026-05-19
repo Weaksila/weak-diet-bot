@@ -852,9 +852,9 @@ async def handle_voice(message: Message):
     else:
         lang_code = db.get_lang(uid)
         msg_text = {
-            "uz": "🎙 *Ovozli xabarlar xizmati faqat VIP mijozlar uchun!* Iltimos, VIP obuna xarid qiling yoki savolingizni matn ko'rinishida yuboring.",
-            "ru": "🎙 *Голосовые сообщения только для VIP клиентов!* Приобретите VIP или отправьте текст.",
-            "en": "🎙 *Voice messages are for VIP clients only!* Get a VIP subscription or send text."
+            "uz": "🎙 *Ovozli xabarlar faqat VIP foydalanuvchilar uchun!* Ushbu funksiyadan foydalanish uchun VIP obuna sotib olishingiz kerak.",
+            "ru": "🎙 *Голосовые сообщения только для VIP пользователей!* Чтобы использовать эту функцию, вам необходимо приобрести VIP-подписку.",
+            "en": "🎙 *Voice messages are for VIP users only!* You need to purchase a VIP subscription to use this feature."
         }
         await message.answer(msg_text.get(lang_code, msg_text["uz"]))
 
