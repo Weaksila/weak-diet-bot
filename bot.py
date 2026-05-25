@@ -1,7 +1,7 @@
-import os, io, asyncio
+import os, io, asyncio, re
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -71,6 +71,71 @@ async def generate_content_with_fallback(contents, is_vip=False):
                     
     raise last_error
 
+def calculate_calorie_target(height, weight, gender, age, goal):
+    if not height or not weight or not age:
+        return 2000 # default fallback
+    
+    # BMR calculation using Mifflin-St Jeor formula
+    if gender and "ayol" in gender.lower():
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) - 161
+    else:
+        bmr = (10 * weight) + (6.25 * height) - (5 * age) + 5
+        
+    tdee = bmr * 1.25 # assume moderate/light activity
+    
+    if "ozish" in goal.lower() or "defitsit" in goal.lower():
+        target = tdee - 500
+    elif "mushak" in goal.lower() or "oshirish" in goal.lower():
+        target = tdee + 500
+    else:
+        target = tdee
+        
+    return int(max(1200, target)) # Keep it above 1200 kcal for safety
+
+def parse_calories_and_macros(text):
+    calories = 0
+    protein = 0.0
+    carbs = 0.0
+    fat = 0.0
+    
+    try:
+        # Extract calories (look for text near fire emoji or "kaloriya" followed by numbers)
+        cal_match = re.search(r'(?:kaloriya|🔥).*?(?:taxminan|\*)*\s*(\d+)(?:\s*-\s*(\d+))?\s*(?:kkal|calories)', text, re.IGNORECASE | re.DOTALL)
+        if cal_match:
+            val1 = int(cal_match.group(1))
+            if cal_match.group(2):
+                val2 = int(cal_match.group(2))
+                calories = int((val1 + val2) / 2)
+            else:
+                calories = val1
+        else:
+            # Fallback regex
+            cal_match_alt = re.search(r'(\d+)(?:\s*-\s*(\d+))?\s*(?:kkal|kkal|calories)', text, re.IGNORECASE)
+            if cal_match_alt:
+                val1 = int(cal_match_alt.group(1))
+                if cal_match_alt.group(2):
+                    val2 = int(cal_match_alt.group(2))
+                    calories = int((val1 + val2) / 2)
+                else:
+                    calories = val1
+                    
+        # Extract macros (Protein, Carbs, Fat) by reading lines
+        for line in text.split('\n'):
+            line_lower = line.lower()
+            num_match = re.search(r'(\d+(?:\.\d+)?)', line)
+            if num_match:
+                val = float(num_match.group(1))
+                if "oqsil" in line_lower or "protein" in line_lower:
+                    protein = val
+                elif "uglevod" in line_lower or "carb" in line_lower:
+                    carbs = val
+                elif "yog'" in line_lower or "yog`" in line_lower or "fat" in line_lower:
+                    fat = val
+    except Exception as e:
+        print(f"[Parser Error] Failed to parse macros: {e}")
+        
+    return calories, protein, carbs, fat
+
 db.init_db()
 
 bot = Bot(token=TELEGRAM_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN))
@@ -91,6 +156,8 @@ class AdminState(StatesGroup):
 class ProfileState(StatesGroup):
     waiting_for_height = State()
     waiting_for_weight = State()
+    waiting_for_gender = State()
+    waiting_for_age = State()
     waiting_for_goal = State()
 
 class UserState(StatesGroup):
@@ -110,6 +177,8 @@ def admin_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📊 Statistika", callback_data="admin_stats"),
          InlineKeyboardButton(text="🔍 Odam qidirish", callback_data="admin_search")],
+        [InlineKeyboardButton(text="👥 Barcha foydalanuvchilar", callback_data="admin_users"),
+         InlineKeyboardButton(text="💾 Bazani yuklash", callback_data="admin_download_db")],
         [InlineKeyboardButton(text="👑 Premium berish", callback_data="admin_premium"),
          InlineKeyboardButton(text="❌ Obunani bekor qilish", callback_data="admin_revoke")],
         [InlineKeyboardButton(text="📢 Xabar yuborish (Barchaga)", callback_data="admin_broadcast")],
@@ -190,19 +259,38 @@ async def process_lang(call: CallbackQuery):
 
 @dp.callback_query(F.data == "show_profile")
 async def cb_profile(call: CallbackQuery, state: FSMContext):
-    profile = db.get_profile(call.from_user.id)
+    uid = call.from_user.id
+    profile = db.get_profile(uid)
     if profile and profile[0] > 0:
-        h, w, g = profile
+        h, w, gender, age, g = profile
+        target = calculate_calorie_target(h, w, gender, age, g)
+        eaten_cal, eaten_prot, eaten_carb, eaten_fat = db.get_daily_intake(uid)
+        
+        pct = min(100, int((eaten_cal / target) * 100)) if target > 0 else 0
+        filled = int(pct / 10)
+        bar = "🟩" * filled + "⬜" * (10 - filled)
+        
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✏️ Profilni yangilash", callback_data="edit_profile")],
             [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
         ])
-        await call.message.edit_text(
+        
+        msg = (
             f"👤 *Sizning profilingiz:*\n\n"
             f"📏 Bo'y: *{h} sm*\n"
             f"⚖️ Vazn: *{w} kg*\n"
-            f"🎯 Maqsad: *{g}*", reply_markup=kb
+            f"⚧ Jins: *{gender}*\n"
+            f"🎂 Yosh: *{age} yosh*\n"
+            f"🎯 Maqsad: *{g}*\n\n"
+            f"🔥 *Kunlik kaloriya normasi:* *{target} kkal*\n"
+            f"📊 *Bugun iste'mol qilindi:* *{eaten_cal} kkal*\n"
+            f"└ {bar} ({pct}%)\n\n"
+            f"💪 *Kunlik makroslar (Bugun):*\n"
+            f"🥩 Protein: *{eaten_prot:.1f}g*\n"
+            f"🍚 Uglevod: *{eaten_carb:.1f}g*\n"
+            f"🧈 Yog': *{eaten_fat:.1f}g*"
         )
+        await call.message.edit_text(msg, reply_markup=kb)
     else:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
@@ -383,20 +471,38 @@ async def premium_cmd(message: Message):
 
 @dp.message(Command("profil"))
 async def profile_cmd(message: Message, state: FSMContext):
-    profile = db.get_profile(message.from_user.id)
+    uid = message.from_user.id
+    profile = db.get_profile(uid)
     if profile and profile[0] > 0:
-        h, w, g = profile
+        h, w, gender, age, g = profile
+        target = calculate_calorie_target(h, w, gender, age, g)
+        eaten_cal, eaten_prot, eaten_carb, eaten_fat = db.get_daily_intake(uid)
+        
+        pct = min(100, int((eaten_cal / target) * 100)) if target > 0 else 0
+        filled = int(pct / 10)
+        bar = "🟩" * filled + "⬜" * (10 - filled)
+        
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✏️ Profilni yangilash", callback_data="edit_profile")],
             [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
         ])
-        await message.answer(
-            f"👤 *Profilingiz:*\n\n"
+        
+        msg = (
+            f"👤 *Sizning profilingiz:*\n\n"
             f"📏 Bo'y: *{h} sm*\n"
             f"⚖️ Vazn: *{w} kg*\n"
-            f"🎯 Maqsad: *{g}*",
-            reply_markup=kb
+            f"⚧ Jins: *{gender}*\n"
+            f"🎂 Yosh: *{age} yosh*\n"
+            f"🎯 Maqsad: *{g}*\n\n"
+            f"🔥 *Kunlik kaloriya normasi:* *{target} kkal*\n"
+            f"📊 *Bugun iste'mol qilindi:* *{eaten_cal} kkal*\n"
+            f"└ {bar} ({pct}%)\n\n"
+            f"💪 *Kunlik makroslar (Bugun):*\n"
+            f"🥩 Protein: *{eaten_prot:.1f}g*\n"
+            f"🍚 Uglevod: *{eaten_carb:.1f}g*\n"
+            f"🧈 Yog': *{eaten_fat:.1f}g*"
         )
+        await message.answer(msg, reply_markup=kb)
     else:
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
@@ -414,17 +520,19 @@ async def generate_diet_plan_cb(call: CallbackQuery):
         
     profile = db.get_profile(uid)
     if not profile or profile[0] == 0:
-        await call.message.answer("⚠️ Avval profilingizni to'ldiring! (Bo'y, vazn, maqsad)\n/profil ni bosing.")
+        await call.message.answer("⚠️ Avval profilingizni to'ldiring! (Bo'y, vazn, jins, yosh, maqsad)\n/profil ni bosing.")
         await call.answer()
         return
         
-    h, w, g = profile
+    h, w, gender, age, g = profile
     wait_msg = await call.message.answer("⏳ *Sizning shaxsiy 1 haftalik menyuingiz tuzilmoqda...*\n_(Bu biroz vaqt olishi mumkin)_", parse_mode=ParseMode.MARKDOWN)
     
     prompt = (
         f"Siz yuqori toifali (PRO) professional AI dietologsiz. Mijozning ko'rsatkichlari:\n"
         f"Bo'yi: {h} sm\n"
         f"Vazni: {w} kg\n"
+        f"Jinsi: {gender}\n"
+        f"Yoshi: {age} yosh\n"
         f"Maqsadi: {g}\n\n"
         f"Iltimos, ushbu mijoz uchun AYNAN uning maqsadiga moslashtirilgan *1 haftalik (Dushanba-Yakshanba)* aniq ovqatlanish jadvalini (menyu) yozib bering.\n"
         f"Har bir kun uchun: Nonushta, Tushlik, Kechki ovqat (va oraliq snek) mahsulotlari, grammlari va taxminiy kaloriyalari kiritilsin.\n"
@@ -519,6 +627,34 @@ async def process_weight(message: Message, state: FSMContext):
         w = int(message.text)
         await state.update_data(weight=w)
         kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👨 Erkak", callback_data="gender_erkak"),
+             InlineKeyboardButton(text="👩 Ayol", callback_data="gender_ayol")]
+        ])
+        await message.answer("⚧ Jinsingizni tanlang:", reply_markup=kb)
+        await state.set_state(ProfileState.waiting_for_gender)
+    except:
+        await message.answer("❌ Faqat raqam kiriting (Masalan: 70)")
+
+@dp.callback_query(ProfileState.waiting_for_gender)
+async def process_gender(call: CallbackQuery, state: FSMContext):
+    gender_map = {"gender_erkak": "Erkak", "gender_ayol": "Ayol"}
+    gender = gender_map.get(call.data, "Erkak")
+    await state.update_data(gender=gender)
+    await call.message.edit_text("🎂 Yoshingiz nechada? (Masalan: 25)")
+    await state.set_state(ProfileState.waiting_for_age)
+    await call.answer()
+
+@dp.message(ProfileState.waiting_for_age)
+async def process_age(message: Message, state: FSMContext):
+    if message.text and message.text.startswith('/'):
+        await state.clear()
+        await message.answer("Profil kiritish bekor qilindi.")
+        return
+    try:
+        age = int(message.text)
+        if age <= 0 or age > 120: raise ValueError
+        await state.update_data(age=age)
+        kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📉 Ozish (Defitsit)", callback_data="goal_ozish")],
             [InlineKeyboardButton(text="⚖️ Hozirgi vaznni saqlash", callback_data="goal_saqlash")],
             [InlineKeyboardButton(text="💪 Mushak massasini oshirish", callback_data="goal_mushak")]
@@ -526,19 +662,27 @@ async def process_weight(message: Message, state: FSMContext):
         await message.answer("🎯 Maqsadingiz?", reply_markup=kb)
         await state.set_state(ProfileState.waiting_for_goal)
     except:
-        await message.answer("❌ Faqat raqam kiriting (Masalan: 70)")
+        await message.answer("❌ Haqiqiy yoshingizni kiriting (Masalan: 25)")
 
 @dp.callback_query(ProfileState.waiting_for_goal)
 async def process_goal(call: CallbackQuery, state: FSMContext):
     goal_map = {"goal_ozish": "📉 Ozish", "goal_saqlash": "⚖️ Vaznni saqlash", "goal_mushak": "💪 Mushak oshirish"}
     g = goal_map.get(call.data, "Noma'lum")
     data = await state.get_data()
-    db.update_profile(call.from_user.id, data['height'], data['weight'], g)
+    db.update_profile(call.from_user.id, data['height'], data['weight'], data['gender'], data['age'], g)
+    
+    target = calculate_calorie_target(data['height'], data['weight'], data['gender'], data['age'], g)
+    
     await state.clear()
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Bosh menuga", callback_data="back_to_main")]
     ])
-    await call.message.edit_text("✅ Profil muvaffaqiyatli saqlandi! Endi bot sizning parametrlaringiz bo'yicha maslahat beradi.", reply_markup=kb)
+    await call.message.edit_text(
+        f"✅ *Profil muvaffaqiyatli saqlandi!*\n\n"
+        f"🔥 Sizning kunlik kaloriya me'yoringiz: *{target} kkal*\n"
+        f"Endi bot sizning parametrlaringiz bo'yicha maslahat beradi.", reply_markup=kb
+    )
+    await call.answer()
 
 # ─── ADMIN PANEL ──────────────────────────────────────────
 @dp.message(F.text == ADMIN_CODE)
@@ -546,11 +690,13 @@ async def admin_panel(message: Message):
     if message.from_user.id != ADMIN_ID: return
     count = db.get_users_count()
     vip = len(db.get_premium_users())
+    active_today = db.get_today_active_users()
     await message.answer(
         f"👨‍💻 *ADMIN PANEL — WEAK Bot*\n\n"
         f"👥 Jami: {count} ta foydalanuvchi\n"
         f"💎 VIP: {vip} ta\n"
-        f"👤 Oddiy: {count - vip} ta",
+        f"👤 Oddiy: {count - vip} ta\n"
+        f"📈 Bugungi aktivlar: {active_today} ta",
         reply_markup=admin_menu_kb()
     )
 
@@ -559,27 +705,53 @@ async def admin_stats(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID: return
     count = db.get_users_count()
     vip = len(db.get_premium_users())
+    active_today = db.get_today_active_users()
     await call.message.answer(
         f"📊 *Bot statistikasi:*\n\n"
         f"👥 Jami foydalanuvchi: *{count} ta*\n"
         f"💎 VIP foydalanuvchi: *{vip} ta*\n"
-        f"👤 Oddiy foydalanuvchi: *{count - vip} ta*"
+        f"👤 Oddiy foydalanuvchi: *{count - vip} ta*\n\n"
+        f"📈 Bugungi aktiv foydalanuvchilar: *{active_today} ta*"
     )
+    await call.answer()
+
+@dp.callback_query(F.data == "admin_download_db")
+async def admin_download_db(call: CallbackQuery):
+    if call.from_user.id != ADMIN_ID: return
+    try:
+        file = FSInputFile("bot.db")
+        await call.message.answer_document(document=file, caption="💾 *Bot ma'lumotlar bazasi (SQLite)*\nBarcha foydalanuvchilar va statistika shu yerda.", parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        await call.message.answer(f"❌ Xatolik yuz berdi: {e}")
     await call.answer()
 
 @dp.callback_query(F.data == "admin_users")
 async def admin_users(call: CallbackQuery):
     if call.from_user.id != ADMIN_ID: return
-    users = db.get_recent_users(10)
+    users = db.get_all_users()
     if not users:
         await call.message.answer("Hozircha foydalanuvchilar yo'q.")
         await call.answer()
         return
-    text = "👥 *Oxirgi 10 ta foydalanuvchi:*\n\n"
-    for uid, name, uname in users:
+    
+    text = f"👥 *Barcha foydalanuvchilar (Jami: {len(users)} ta):*\n\n"
+    chunks = []
+    current_chunk = text
+    
+    for idx, (uid, name, uname) in enumerate(users, start=1):
         tag = f"@{uname}" if uname else "—"
-        text += f"• {name or 'Nomsiz'} | {tag} | `{uid}`\n"
-    await call.message.answer(text)
+        line = f"{idx}. {name or 'Nomsiz'} | {tag} | `{uid}`\n"
+        if len(current_chunk) + len(line) > 4000:
+            chunks.append(current_chunk)
+            current_chunk = line
+        else:
+            current_chunk += line
+    if current_chunk:
+        chunks.append(current_chunk)
+        
+    for chunk in chunks:
+        await call.message.answer(chunk, parse_mode=ParseMode.MARKDOWN)
+        await asyncio.sleep(0.1)
     await call.answer()
 
 @dp.callback_query(F.data == "admin_premium")

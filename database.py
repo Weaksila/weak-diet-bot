@@ -23,6 +23,18 @@ def init_db():
     ''')
     cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('free_limit', 3)")
     
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS daily_intake (
+            user_id INTEGER,
+            date TEXT,
+            calories INTEGER DEFAULT 0,
+            protein REAL DEFAULT 0,
+            carbs REAL DEFAULT 0,
+            fat REAL DEFAULT 0,
+            PRIMARY KEY (user_id, date)
+        )
+    ''')
+    
     columns_to_add = [
         "is_premium BOOLEAN DEFAULT 0",
         "daily_usage INTEGER DEFAULT 0",
@@ -33,7 +45,9 @@ def init_db():
         "lang TEXT DEFAULT 'uz'",
         "premium_expire_date TEXT",
         "is_banned BOOLEAN DEFAULT 0",
-        "water_drank INTEGER DEFAULT 0"
+        "water_drank INTEGER DEFAULT 0",
+        "gender TEXT DEFAULT ''",
+        "age INTEGER DEFAULT 0"
     ]
     for col in columns_to_add:
         try:
@@ -217,6 +231,15 @@ def get_users_count():
     conn.close()
     return count
 
+def get_today_active_users():
+    today = datetime.date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users WHERE last_usage_date = ?", (today,))
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
 def get_all_user_ids():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -233,17 +256,25 @@ def get_recent_users(limit=20):
     conn.close()
     return users
 
-def update_profile(user_id, height, weight, goal):
+def get_all_users():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET height=?, weight=?, goal=? WHERE user_id=?", (height, weight, goal, user_id))
+    cursor.execute("SELECT user_id, full_name, username FROM users ORDER BY id DESC")
+    users = cursor.fetchall()
+    conn.close()
+    return users
+
+def update_profile(user_id, height, weight, gender, age, goal):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET height=?, weight=?, gender=?, age=?, goal=? WHERE user_id=?", (height, weight, gender, age, goal, user_id))
     conn.commit()
     conn.close()
 
 def get_profile(user_id):
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("SELECT height, weight, goal FROM users WHERE user_id=?", (user_id,))
+    cursor.execute("SELECT height, weight, gender, age, goal FROM users WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
     conn.close()
     return row
@@ -262,3 +293,28 @@ def get_lang(user_id):
     row = cursor.fetchone()
     conn.close()
     return row[0] if row else 'uz'
+
+def add_daily_intake(user_id, calories, protein, carbs, fat):
+    today = datetime.date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT INTO daily_intake (user_id, date, calories, protein, carbs, fat)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id, date) DO UPDATE SET
+            calories = calories + excluded.calories,
+            protein = protein + excluded.protein,
+            carbs = carbs + excluded.carbs,
+            fat = fat + excluded.fat
+    ''', (user_id, today, calories, protein, carbs, fat))
+    conn.commit()
+    conn.close()
+
+def get_daily_intake(user_id):
+    today = datetime.date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT calories, protein, carbs, fat FROM daily_intake WHERE user_id = ? AND date = ?", (user_id, today))
+    row = cursor.fetchone()
+    conn.close()
+    return row if row else (0, 0.0, 0.0, 0.0)
